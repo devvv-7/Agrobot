@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ESP32 — Sensor Dashboard & Relay Control</title>
+  <style>
+    body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background:#f5f7fb; color:#111; margin:0; padding:24px; }
+    .container { max-width:720px; margin:0 auto; background:#fff; padding:20px; border-radius:12px; box-shadow:0 6px 18px rgba(20,30,60,0.08); }
+    h1 { margin:0 0 12px 0; font-size:20px; }
+    .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin-top:16px; }
+    .card { padding:14px; border-radius:10px; background:#fbfdff; box-shadow:0 2px 6px rgba(10,20,40,0.03); }
+    .value { font-weight:700; font-size:22px; margin-top:6px; }
+    .muted { color:#666; font-size:13px; }
+    .relay-controls { display:flex; gap:10px; margin-top:16px; align-items:center; }
+    button { padding:10px 14px; border-radius:8px; border:0; cursor:pointer; font-weight:600; }
+    .on { background:#1f8a3b; color:#fff; }
+    .off { background:#d44; color:#fff; }
+    .toggle { background:#ddd; color:#111; }
+    .status { margin-top:10px; font-size:13px; color:#555; }
+    .footer { margin-top:18px; font-size:12px; color:#777; }
+    .big { grid-column: span 2; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ESP32 Sensor Dashboard & Relay Control</h1>
+    <div class="muted">Realtime values from Firebase Realtime Database</div>
+
+    <div class="grid" style="margin-top:18px;">
+      <div class="card">
+        <div class="muted">Temperature</div>
+        <div id="temp" class="value">-- °C</div>
+      </div>
+
+      <div class="card">
+        <div class="muted">Humidity</div>
+        <div id="hum" class="value">-- %</div>
+      </div>
+
+      <div class="card">
+        <div class="muted">Soil Moisture</div>
+        <div id="soil" class="value">-- %</div>
+      </div>
+
+      <div class="card">
+        <div class="muted">Relay State</div>
+        <div id="relayState" class="value">--</div>
+      </div>
+
+      <div class="card big">
+        <div class="muted">Controls</div>
+        <div class="relay-controls">
+          <button id="btnOn" class="on">Turn ON</button>
+          <button id="btnOff" class="off">Turn OFF</button>
+          <button id="btnToggle" class="toggle">Toggle</button>
+        </div>
+        <div id="controlStatus" class="status">Not connected</div>
+      </div>
+    </div>
+
+    <div class="footer">
+      Connected to Firebase DB: <code id="dbUrl"></code>
+    </div>
+  </div>
+
+  <!-- Firebase CDN (compat - simple usage) -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+
+  <script>
+    // --------- Replace these with your project's values (taken from your sketch) ----------
+    const firebaseConfig = {
+  apiKey: "AIzaSyBFDcw1HNyZp6rRLMIEKX7c6-SdR7t7NCg",
+  authDomain: "esp32-agri-3c9a0.firebaseapp.com",
+  databaseURL: "https://esp32-agri-3c9a0-default-rtdb.firebaseio.com",
+  projectId: "esp32-agri-3c9a0",
+  storageBucket: "esp32-agri-3c9a0.firebasestorage.app",
+  messagingSenderId: "687937182162",
+  appId: "1:687937182162:web:24e8514ce770c7117cd00b",
+  measurementId: "G-H6JX4ERQYW"
+};
+    // Initialize Firebase
+    firebase.initializeApp(firebaseConfig);
+    const database = firebase.database();
+
+    // DOM refs
+    const tempEl = document.getElementById('temp');
+    const humEl = document.getElementById('hum');
+    const soilEl = document.getElementById('soil');
+    const relayEl = document.getElementById('relayState');
+    const controlStatus = document.getElementById('controlStatus');
+    const dbUrlEl = document.getElementById('dbUrl');
+
+    dbUrlEl.textContent = firebaseConfig.databaseURL;
+
+    // Helper: safe set string in DB
+    function setRelayState(state) {
+      controlStatus.textContent = 'Writing "' + state + '" to /RelayControl/State ...';
+      database.ref('/RelayControl/State').set(state)
+        .then(()=> controlStatus.textContent = 'Successfully wrote "'+state+'"')
+        .catch(err => controlStatus.textContent = 'Write error: ' + err.message);
+    }
+
+    // On-screen buttons
+    document.getElementById('btnOn').addEventListener('click', ()=> setRelayState('ON'));
+    document.getElementById('btnOff').addEventListener('click', ()=> setRelayState('OFF'));
+    document.getElementById('btnToggle').addEventListener('click', async ()=> {
+      controlStatus.textContent = 'Toggling...';
+      try {
+        const snap = await database.ref('/RelayControl/State').get();
+        let val = snap.exists() ? (''+snap.val()).toUpperCase() : 'OFF';
+        let newState = (val === 'ON') ? 'OFF' : 'ON';
+        await database.ref('/RelayControl/State').set(newState);
+        controlStatus.textContent = 'Toggled to ' + newState;
+      } catch (e) {
+        controlStatus.textContent = 'Toggle error: ' + e.message;
+      }
+    });
+
+    // Listen for sensor data changes (your sketch writes /SensorData as JSON)
+    const sensorRef = database.ref('/SensorData');
+    sensorRef.on('value', (snapshot) => {
+      const data = snapshot.val();
+      if (!data) {
+        tempEl.textContent = '-- °C';
+        humEl.textContent = '-- %';
+        soilEl.textContent = '-- %';
+        return;
+      }
+      // Expecting fields: Temperature, Humidity, SoilMoisture
+      if (data.Temperature !== undefined) tempEl.textContent = Number(data.Temperature).toFixed(1) + ' °C';
+      if (data.Humidity !== undefined) humEl.textContent = Number(data.Humidity).toFixed(1) + ' %';
+      if (data.SoilMoisture !== undefined) soilEl.textContent = Number(data.SoilMoisture) + ' %';
+    }, (error) => {
+      console.error('sensorRef error', error);
+      controlStatus.textContent = 'Sensor listener error: ' + error.message;
+    });
+
+    // Listen for relay state changes
+    const relayRef = database.ref('/RelayControl/State');
+    relayRef.on('value', (snap) => {
+      const v = snap.exists() ? (''+snap.val()).toUpperCase() : 'OFF';
+      relayEl.textContent = v;
+      relayEl.style.color = (v === 'ON') ? '#1f8a3b' : '#d44';
+      controlStatus.textContent = 'Listening (relay: ' + v + ')';
+    }, (err) => {
+      console.error('relayRef error', err);
+      controlStatus.textContent = 'Relay listener error: ' + err.message;
+    });
+
+    // Optional: Anonymous auth (helps if your DB rules require auth)
+    firebase.auth().onAuthStateChanged(user => {
+      if (user) {
+        controlStatus.textContent = 'Signed in anonymously';
+      } else {
+        firebase.auth().signInAnonymously().catch(err => {
+          console.warn('Anonymous sign-in failed:', err);
+          controlStatus.textContent = 'Auth error: ' + err.message;
+        });
+      }
+    });
+  </script>
+</body>
+</html>
